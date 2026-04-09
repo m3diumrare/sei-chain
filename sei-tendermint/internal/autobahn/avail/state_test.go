@@ -53,7 +53,6 @@ func leaderKey(committee *types.Committee, keys []types.SecretKey, view types.Vi
 }
 
 func makeCommitQC(
-	rng utils.Rng,
 	committee *types.Committee,
 	keys []types.SecretKey,
 	prev utils.Option[*types.CommitQC],
@@ -106,9 +105,9 @@ func testState(t *testing.T, stateDir utils.Option[string]) {
 	committee, keys := types.GenCommittee(rng, 3)
 
 	if err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
-		ds := data.NewState(&data.Config{
+		ds := utils.OrPanic1(data.NewState(&data.Config{
 			Committee: committee,
-		}, utils.None[data.BlockStore]())
+		}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 		s.SpawnBgNamed("data.State.Run()", func() error {
 			return utils.IgnoreCancel(ds.Run(ctx))
 		})
@@ -139,7 +138,7 @@ func testState(t *testing.T, stateDir utils.Option[string]) {
 			}
 
 			t.Logf("Push votes for all the blocks.")
-			for _, lane := range committee.Lanes().All() {
+			for lane := range committee.Lanes().All() {
 				next := state.NextBlock(lane)
 				for i := types.LaneRangeOpt(prev, lane).Next(); i < next; i++ {
 					b, err := state.Block(ctx, lane, i)
@@ -159,13 +158,13 @@ func testState(t *testing.T, stateDir utils.Option[string]) {
 			if err != nil {
 				return fmt.Errorf("state.WaitForNewLaneQCs(): %w", err)
 			}
-			qc := makeCommitQC(rng, committee, keys, prev, laneQCs, state.LastAppQC())
+			qc := makeCommitQC(committee, keys, prev, laneQCs, state.LastAppQC())
 			if err := state.PushCommitQC(ctx, qc); err != nil {
 				return fmt.Errorf("state.PushCommitQC(): %w", err)
 			}
 
 			t.Logf("Push app votes.")
-			appProposal := types.NewAppProposal(qc.GlobalRange().Next-1, qc.Proposal().Index(), types.GenAppHash(rng))
+			appProposal := types.NewAppProposal(qc.GlobalRange(committee).Next-1, qc.Proposal().Index(), types.GenAppHash(rng))
 			for _, vote := range makeAppVotes(keys, appProposal) {
 				if err := state.PushAppVote(ctx, vote); err != nil {
 					return fmt.Errorf("state.PushAppVote(): %w", err)
@@ -183,7 +182,7 @@ func testState(t *testing.T, stateDir utils.Option[string]) {
 			}
 
 			t.Logf("Check that the executed local blocks have been pruned")
-			for _, lane := range committee.Lanes().All() {
+			for lane := range committee.Lanes().All() {
 				if lr := types.LaneRangeOpt(prev, lane); lr.Next() > 0 {
 					if _, err := state.Block(ctx, lane, lr.Next()-1); !errors.Is(err, data.ErrPruned) {
 						return fmt.Errorf("state.Block(): %w, want %v", err, data.ErrPruned.Error())
@@ -201,7 +200,7 @@ func testState(t *testing.T, stateDir utils.Option[string]) {
 			}
 
 			t.Logf("Check that the blocks were successfully pushed to data state.")
-			gr := got.QC().GlobalRange()
+			gr := got.QC().GlobalRange(committee)
 			for i := gr.First; i < gr.Next; i++ {
 				b, err := ds.Block(ctx, i)
 				if err != nil {
@@ -237,7 +236,7 @@ func TestStateRestartFromPersisted(t *testing.T) {
 	var wantNextBlocks map[types.LaneID]types.BlockNumber
 
 	require.NoError(t, scope.Run(t.Context(), func(ctx context.Context, s scope.Scope) error {
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 		s.SpawnBgNamed("data.Run", func() error {
 			return utils.IgnoreCancel(ds.Run(ctx))
 		})
@@ -260,7 +259,7 @@ func TestStateRestartFromPersisted(t *testing.T) {
 				}
 			}
 
-			for _, lane := range committee.Lanes().All() {
+			for lane := range committee.Lanes().All() {
 				next := state.NextBlock(lane)
 				for n := types.LaneRangeOpt(prev, lane).Next(); n < next; n++ {
 					b, err := state.Block(ctx, lane, n)
@@ -279,12 +278,12 @@ func TestStateRestartFromPersisted(t *testing.T) {
 			if err != nil {
 				return fmt.Errorf("WaitForLaneQCs: %w", err)
 			}
-			qc := makeCommitQC(rng, committee, keys, prev, laneQCs, state.LastAppQC())
+			qc := makeCommitQC(committee, keys, prev, laneQCs, state.LastAppQC())
 			if err := state.PushCommitQC(ctx, qc); err != nil {
 				return fmt.Errorf("PushCommitQC: %w", err)
 			}
 
-			appProposal := types.NewAppProposal(qc.GlobalRange().Next-1, qc.Proposal().Index(), types.GenAppHash(rng))
+			appProposal := types.NewAppProposal(qc.GlobalRange(committee).Next-1, qc.Proposal().Index(), types.GenAppHash(rng))
 			for _, vote := range makeAppVotes(keys, appProposal) {
 				if err := state.PushAppVote(ctx, vote); err != nil {
 					return fmt.Errorf("PushAppVote: %w", err)
@@ -305,14 +304,14 @@ func TestStateRestartFromPersisted(t *testing.T) {
 		}
 
 		wantNextBlocks = make(map[types.LaneID]types.BlockNumber, committee.Lanes().Len())
-		for _, lane := range committee.Lanes().All() {
+		for lane := range committee.Lanes().All() {
 			wantNextBlocks[lane] = state.NextBlock(lane)
 		}
 		return nil
 	}))
 
 	// Phase 2: Restart from the same directory.
-	ds2 := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+	ds2 := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 	state2, err := NewState(keys[0], ds2, utils.Some(dir))
 	require.NoError(t, err)
 
@@ -325,7 +324,7 @@ func TestStateRestartFromPersisted(t *testing.T) {
 	_, ok = state2.LastCommitQC().Load().Get()
 	require.True(t, ok, "LastCommitQC should be set after restart")
 
-	for _, lane := range committee.Lanes().All() {
+	for lane := range committee.Lanes().All() {
 		require.Equal(t, wantNextBlocks[lane], state2.NextBlock(lane),
 			"NextBlock(%v) should match pre-restart value", lane)
 	}
@@ -334,10 +333,11 @@ func TestStateRestartFromPersisted(t *testing.T) {
 func TestStateMismatchedQCs(t *testing.T) {
 	rng := utils.TestRng()
 	committee, keys := types.GenCommittee(rng, 4)
+	initialBlock := committee.FirstBlock()
 
-	ds := data.NewState(&data.Config{
+	ds := utils.OrPanic1(data.NewState(&data.Config{
 		Committee: committee,
-	}, utils.None[data.BlockStore]())
+	}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 	state, err := NewState(keys[0], ds, utils.None[string]())
 	require.NoError(t, err)
 	ctx := t.Context()
@@ -373,13 +373,13 @@ func TestStateMismatchedQCs(t *testing.T) {
 
 	// 3. Create CommitQC for index 0 (finalizes block 0)
 	qc0 := makeQC(utils.None[*types.CommitQC](), map[types.LaneID]*types.LaneQC{lane: laneQC})
-	require.Equal(t, types.GlobalBlockNumber(0), qc0.GlobalRange().First)
-	require.Equal(t, types.GlobalBlockNumber(1), qc0.GlobalRange().Next)
+	require.Equal(t, initialBlock, qc0.GlobalRange(committee).First)
+	require.Equal(t, initialBlock+1, qc0.GlobalRange(committee).Next)
 
 	t.Run("PushAppQC mismatch", func(t *testing.T) {
 		require := require.New(t)
 		// AppQC for index 1, but paired with CommitQC for index 0
-		appProposal1 := types.NewAppProposal(0, 1, types.GenAppHash(rng))
+		appProposal1 := types.NewAppProposal(initialBlock, 1, types.GenAppHash(rng))
 		appQC1 := types.NewAppQC(makeAppVotes(keys, appProposal1))
 
 		err := state.PushAppQC(appQC1, qc0)
@@ -392,9 +392,9 @@ func TestPushBlockRejectsBadParentHash(t *testing.T) {
 	rng := utils.TestRng()
 	committee, keys := types.GenCommittee(rng, 3)
 
-	ds := data.NewState(&data.Config{
+	ds := utils.OrPanic1(data.NewState(&data.Config{
 		Committee: committee,
-	}, utils.None[data.BlockStore]())
+	}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 	state := utils.OrPanic1(NewState(keys[0], ds, utils.None[string]()))
 
 	// Produce a valid first block on our lane.
@@ -417,9 +417,9 @@ func TestPushBlockRejectsWrongSigner(t *testing.T) {
 	rng := utils.TestRng()
 	committee, keys := types.GenCommittee(rng, 3)
 
-	ds := data.NewState(&data.Config{
+	ds := utils.OrPanic1(data.NewState(&data.Config{
 		Committee: committee,
-	}, utils.None[data.BlockStore]())
+	}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 	state := utils.OrPanic1(NewState(keys[0], ds, utils.None[string]()))
 
 	// Create a block on keys[0]'s lane but sign it with keys[1].
@@ -434,10 +434,11 @@ func TestPushBlockRejectsWrongSigner(t *testing.T) {
 func TestNewStateWithPersistence(t *testing.T) {
 	rng := utils.TestRng()
 	committee, keys := types.GenCommittee(rng, 4)
+	initialBlock := committee.FirstBlock()
 
 	t.Run("empty dir loads fresh state", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		state, err := NewState(keys[0], ds, utils.Some(dir))
 		require.NoError(t, err)
@@ -450,7 +451,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("loads persisted AppQC", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		roadIdx := types.RoadIndex(7)
 		globalNum := types.GlobalBlockNumber(50)
@@ -463,7 +464,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		prev := utils.None[*types.CommitQC]()
 		var pruneQC *types.CommitQC
 		for i := types.RoadIndex(0); i <= roadIdx; i++ {
-			qc := makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			qc := makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qc)
 			require.NoError(t, cp.MaybePruneAndPersist(utils.None[*types.CommitQC](), []*types.CommitQC{qc}, noCommitQCCB))
 			pruneQC = qc
@@ -491,7 +492,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("loads persisted blocks", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 		lane := keys[0].Public()
 
 		// Persist blocks using BlockPersister.
@@ -499,7 +500,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		require.NoError(t, err)
 
 		var parent types.BlockHeaderHash
-		for n := types.BlockNumber(0); n < 3; n++ {
+		for n := range types.BlockNumber(3) {
 			block := types.NewBlock(lane, n, parent, types.GenPayload(rng))
 			signed := types.Sign(keys[0], types.NewLaneProposal(block))
 			parent = block.Header().Hash()
@@ -515,7 +516,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("loads persisted AppQC and blocks together", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 		lane := keys[0].Public()
 
 		roadIdx := types.RoadIndex(2)
@@ -528,8 +529,8 @@ func TestNewStateWithPersistence(t *testing.T) {
 		require.NoError(t, err)
 		prev := utils.None[*types.CommitQC]()
 		var pruneQC *types.CommitQC
-		for i := types.RoadIndex(0); i <= roadIdx; i++ {
-			qc := makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+		for range roadIdx + 1 {
+			qc := makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qc)
 			require.NoError(t, cp.MaybePruneAndPersist(utils.None[*types.CommitQC](), []*types.CommitQC{qc}, noCommitQCCB))
 			pruneQC = qc
@@ -548,7 +549,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		require.NoError(t, err)
 
 		var parent types.BlockHeaderHash
-		for n := types.BlockNumber(0); n < 3; n++ {
+		for n := range types.BlockNumber(3) {
 			block := types.NewBlock(lane, n, parent, types.GenPayload(rng))
 			signed := types.Sign(keys[0], types.NewLaneProposal(block))
 			parent = block.Header().Hash()
@@ -568,7 +569,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("loads persisted commitQCs", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		// Persist CommitQCs to disk.
 		cp, _, err := persist.NewCommitQCPersister(utils.Some(dir))
@@ -577,7 +578,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		qcs := make([]*types.CommitQC, 3)
 		prev := utils.None[*types.CommitQC]()
 		for i := range qcs {
-			qcs[i] = makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			qcs[i] = makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qcs[i])
 			require.NoError(t, cp.MaybePruneAndPersist(utils.None[*types.CommitQC](), []*types.CommitQC{qcs[i]}, noCommitQCCB))
 		}
@@ -593,7 +594,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("loads persisted commitQCs with AppQC", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		// Persist AppQC at road index 1.
 		roadIdx := types.RoadIndex(1)
@@ -608,7 +609,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		qcs := make([]*types.CommitQC, 5)
 		prev := utils.None[*types.CommitQC]()
 		for i := range qcs {
-			qcs[i] = makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			qcs[i] = makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qcs[i])
 			require.NoError(t, cp.MaybePruneAndPersist(utils.None[*types.CommitQC](), []*types.CommitQC{qcs[i]}, noCommitQCCB))
 		}
@@ -636,12 +637,12 @@ func TestNewStateWithPersistence(t *testing.T) {
 		allQCs := make([]*types.CommitQC, 6)
 		prev := utils.None[*types.CommitQC]()
 		for i := range allQCs {
-			allQCs[i] = makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			allQCs[i] = makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(allQCs[i])
 		}
 
 		// Persist prune anchor (AppQC + CommitQC pair at road index 0).
-		appProposal := types.NewAppProposal(0, 0, types.GenAppHash(rng))
+		appProposal := types.NewAppProposal(initialBlock, 0, types.GenAppHash(rng))
 		appQC := types.NewAppQC(makeAppVotes(keys, appProposal))
 		prunePers, _, err := persist.NewPersister[*pb.PersistedAvailPruneAnchor](utils.Some(dir), innerFile)
 		require.NoError(t, err)
@@ -666,13 +667,13 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("anchor past all persisted commitQCs truncates WAL", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		// Build a chain of 10 CommitQCs (indices 0-9).
 		qcs := make([]*types.CommitQC, 10)
 		prev := utils.None[*types.CommitQC]()
 		for i := range qcs {
-			qcs[i] = makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			qcs[i] = makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qcs[i])
 		}
 
@@ -709,7 +710,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("anchor past all persisted blocks truncates lane WAL", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 		lane := keys[0].Public()
 
 		// Persist commitQCs 0-9 and blocks 0-2 for one lane.
@@ -718,7 +719,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		cp, _, err := persist.NewCommitQCPersister(utils.Some(dir))
 		require.NoError(t, err)
 		for i := range qcs {
-			qcs[i] = makeCommitQC(rng, committee, keys, prev, nil, utils.None[*types.AppQC]())
+			qcs[i] = makeCommitQC(committee, keys, prev, nil, utils.None[*types.AppQC]())
 			prev = utils.Some(qcs[i])
 			require.NoError(t, cp.MaybePruneAndPersist(utils.None[*types.CommitQC](), []*types.CommitQC{qcs[i]}, noCommitQCCB))
 		}
@@ -727,7 +728,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 		bp, _, err := persist.NewBlockPersister(utils.Some(dir))
 		require.NoError(t, err)
 		var parent types.BlockHeaderHash
-		for n := types.BlockNumber(0); n < 3; n++ {
+		for n := range types.BlockNumber(3) {
 			block := types.NewBlock(lane, n, parent, types.GenPayload(rng))
 			signed := types.Sign(keys[0], types.NewLaneProposal(block))
 			parent = block.Header().Hash()
@@ -757,7 +758,7 @@ func TestNewStateWithPersistence(t *testing.T) {
 
 	t.Run("corrupt AppQC data returns error", func(t *testing.T) {
 		dir := t.TempDir()
-		ds := data.NewState(&data.Config{Committee: committee}, utils.None[data.BlockStore]())
+		ds := utils.OrPanic1(data.NewState(&data.Config{Committee: committee}, utils.OrPanic1(data.NewDataWAL(utils.None[string](), committee))))
 
 		// Create a throwaway persister to discover the A/B filenames,
 		// then corrupt them so NewState fails on load.

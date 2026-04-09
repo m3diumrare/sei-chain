@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/armon/go-metrics"
-	"github.com/gogo/protobuf/proto"
 	"github.com/sei-protocol/sei-chain/sei-cosmos/codec"
 	snapshottypes "github.com/sei-protocol/sei-chain/sei-cosmos/snapshots/types"
 	"github.com/sei-protocol/sei-chain/sei-cosmos/store/types"
@@ -31,7 +29,7 @@ import (
 
 // InitChain implements the ABCI interface. It runs the initialization logic
 // directly on the CommitMultiStore.
-func (app *BaseApp) InitChain(ctx context.Context, req *abci.RequestInitChain) (res *abci.ResponseInitChain, err error) {
+func (app *BaseApp) InitChain(ctx context.Context, req *abci.RequestInitChain) (*abci.ResponseInitChain, error) {
 	// On a new chain, we consider the init chain block height as 0, even though
 	// req.InitialHeight is 1 by default.
 	initHeader := tmproto.Header{ChainID: req.ChainId, Time: req.Time}
@@ -65,32 +63,11 @@ func (app *BaseApp) InitChain(ctx context.Context, req *abci.RequestInitChain) (
 	app.SetDeliverStateToCommit()
 
 	if app.initChainer == nil {
-		return
+		return nil, nil
 	}
 
 	resp := app.initChainer(app.deliverState.ctx, *req)
 	app.initChainer(app.processProposalState.ctx, *req)
-	res = &resp
-
-	// sanity check
-	if len(req.Validators) > 0 {
-		if len(req.Validators) != len(res.Validators) {
-			return nil,
-				fmt.Errorf(
-					"len(RequestInitChain.Validators) != len(GenesisValidators) (%d != %d)",
-					len(req.Validators), len(res.Validators),
-				)
-		}
-
-		sort.Sort(abci.ValidatorUpdates(req.Validators))
-		sort.Sort(abci.ValidatorUpdates(res.Validators))
-
-		for i := range res.Validators {
-			if !proto.Equal(&res.Validators[i], &req.Validators[i]) {
-				return nil, fmt.Errorf("genesisValidators[%d] != req.Validators[%d] ", i, i)
-			}
-		}
-	}
 
 	// In the case of a new chain, AppHash will be the hash of an empty string.
 	// During an upgrade, it'll be the hash of the last committed block.
@@ -106,11 +83,8 @@ func (app *BaseApp) InitChain(ctx context.Context, req *abci.RequestInitChain) (
 
 	// NOTE: We don't commit, but BeginBlock for block `initial_height` starts from this
 	// deliverState.
-	return &abci.ResponseInitChain{
-		ConsensusParams: res.ConsensusParams,
-		Validators:      res.Validators,
-		AppHash:         appHash,
-	}, nil
+	resp.AppHash = appHash
+	return &resp, nil
 }
 
 // Info implements the ABCI interface.
@@ -447,6 +421,10 @@ func (app *BaseApp) Query(ctx context.Context, req *abci.RequestQuery) (res *abc
 		resp = sdkerrors.QueryResultWithDebug(sdkerrors.Wrap(sdkerrors.ErrUnknownRequest, "unknown query path"), app.trace)
 	}
 	return &resp, nil
+}
+
+func (app *BaseApp) GetValidators() []abci.ValidatorUpdate {
+	return nil
 }
 
 // ListSnapshots implements the ABCI interface. It delegates to app.snapshotManager if set.
@@ -959,6 +937,20 @@ func (app *BaseApp) ProcessProposal(ctx context.Context, req *abci.RequestProces
 	// NOTE: header hash is not set in NewContext, so we manually set it here
 
 	app.prepareProcessProposalState(req.Hash)
+
+	// Snapshot a clean context for read-only validation (e.g. gas checks).
+	// Branch from the source store (cms or deliverState) rather than from
+	// processProposalState, so that speculative writes from the optimistic
+	// goroutine are not visible.
+	var cleanMS sdk.CacheMultiStore
+	if app.deliverState != nil {
+		// Block 1: deliverState has InitChain genesis writes not yet committed
+		cleanMS = app.deliverState.ms.CacheMultiStore()
+	} else {
+		// Blocks 2+: committed root store has everything
+		cleanMS = app.cms.CacheMultiStore()
+	}
+	app.processProposalCleanCtx = app.processProposalState.Context().WithMultiStore(cleanMS)
 
 	defer func() {
 		if err := recover(); err != nil {

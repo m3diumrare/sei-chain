@@ -111,10 +111,13 @@ func NewCryptoSim(
 		config.MinimumNumberOfDormantAccounts = 2 * config.TransactionsPerBlock
 	}
 
+	// The workload context is cancelled on Ctrl-C (or programmatically) to
+	// stop the benchmark loop and executors.
 	ctx, cancel := context.WithCancel(ctx)
 
 	var err error
 	config.DataDir, err = ResolveAndCreateDir(config.DataDir)
+
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to resolve and create data directory: %w", err)
@@ -128,7 +131,17 @@ func NewCryptoSim(
 	fmt.Printf("Running cryptosim benchmark from data directory: %s\n", config.DataDir)
 	fmt.Printf("Logs are being routed to: %s\n", config.LogDir)
 
-	db, err := wrappers.NewDBImpl(ctx, config.Backend, config.DataDir)
+	var dbConfig any
+	switch config.Backend {
+	case wrappers.FlatKV:
+		dbConfig = config.FlatKVConfig
+	case wrappers.SSComposite, wrappers.CompositeDual_SSComposite:
+		dbConfig = config.StateStoreConfig
+	case wrappers.SSHistoricalOffload:
+		dbConfig = config.HistoricalOffload
+	}
+
+	db, err := wrappers.NewDBImpl(ctx, config.Backend, config.DataDir, dbConfig)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create database: %w", err)
@@ -171,7 +184,7 @@ func NewCryptoSim(
 	var recieptsChan chan *block
 	if config.GenerateReceipts {
 		recieptsChan = make(chan *block, config.RecieptChannelCapacity)
-		_, err := NewRecieptStoreSimulator(ctx, config, recieptsChan, metrics)
+		_, err := NewRecieptStoreSimulator(ctx, config, recieptsChan, metrics, rand.Clone(false))
 		if err != nil {
 			cancel()
 			return nil, fmt.Errorf("failed to create receipt store simulator: %w", err)
@@ -429,6 +442,8 @@ func (c *CryptoSim) handleNextBlock(blk *block) {
 		c.database.IncrementTransactionCount()
 	}
 
+	// TODO: skip executor dispatch and FinalizeBlock when DisableTransactionExecution
+	// is true and only receipts are being benchmarked. FlatKV commits waste I/O here.
 	for txn := range blk.Iterator() {
 		c.executors[c.nextExecutorIndex].ScheduleForExecution(txn)
 		c.nextExecutorIndex = (c.nextExecutorIndex + 1) % len(c.executors)
@@ -500,8 +515,7 @@ func (c *CryptoSim) teardown() {
 		}
 	}
 
-	c.dataGenerator.Close()
-
+	c.cancel()
 	c.closeChan <- struct{}{}
 }
 

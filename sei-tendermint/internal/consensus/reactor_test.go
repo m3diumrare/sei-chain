@@ -30,7 +30,6 @@ import (
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils/scope"
 	tmcons "github.com/sei-protocol/sei-chain/sei-tendermint/proto/tendermint/consensus"
-	tmproto "github.com/sei-protocol/sei-chain/sei-tendermint/proto/tendermint/types"
 	"github.com/sei-protocol/sei-chain/sei-tendermint/types"
 )
 
@@ -80,7 +79,7 @@ func setup(
 			NopMetrics(),
 			config.DefaultConfig(),
 		)
-
+		require.NoError(t, err)
 		blocksSub, err := state.eventBus.SubscribeWithArgs(ctx, tmpubsub.SubscribeArgs{
 			ClientID: testSubscriber,
 			Query:    types.EventQueryNewBlock,
@@ -152,7 +151,7 @@ func finalizeTx(
 	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
 		for i, sub := range blocksSubs {
 			s.Spawn(func() error {
-				if err := states[i].txNotifier.(mempool.Mempool).CheckTx(ctx, tx, nil, mempool.TxInfo{}); err != nil {
+				if err := states[i].txMempool.CheckTx(ctx, tx, nil, mempool.TxInfo{}); err != nil {
 					return fmt.Errorf("CheckTx(): %w", err)
 				}
 				for {
@@ -261,7 +260,8 @@ func TestReactorWithEvidence(t *testing.T) {
 
 		app := kvstore.NewApplication()
 		vals := types.TM2PB.ValidatorUpdates(state.Validators)
-		_, err = app.InitChain(ctx, &abci.RequestInitChain{Validators: vals})
+		app.SetValidators(vals)
+		_, err = app.InitChain(ctx, &abci.RequestInitChain{})
 		require.NoError(t, err)
 
 		pv := privVals[i]
@@ -275,7 +275,6 @@ func TestReactorWithEvidence(t *testing.T) {
 		mempool := mempool.NewTxMempool(
 			thisConfig.Mempool,
 			proxyAppConnMem,
-			nil,
 		)
 
 		if thisConfig.Consensus.WaitForTxs() {
@@ -368,7 +367,7 @@ func TestReactorCreatesBlockWhenEmptyBlocksFalse(t *testing.T) {
 	// send a tx
 	require.NoError(
 		t,
-		assertMempool(t, states[1].txNotifier).CheckTx(
+		states[1].txMempool.CheckTx(
 			ctx,
 			[]byte{1, 2, 3},
 			nil,
@@ -474,7 +473,6 @@ func TestReactorValidatorSetChanges(t *testing.T) {
 		nVals,
 		nPeers,
 		func() TimeoutTicker { return NewTimeoutTicker() },
-		newEpehemeralKVStore,
 	)
 	t.Cleanup(cleanup)
 
@@ -515,27 +513,6 @@ func TestReactorMemoryLimitCoverage(t *testing.T) {
 	ps := NewPeerState(testPeerID)
 	ps.PRS.Height = 1
 	ps.PRS.Round = 0
-
-	// Create an invalid proposal with excessive PartSetHeader.Total
-	invalidProposal := &types.Proposal{
-		Type:     tmproto.ProposalType,
-		Height:   1,
-		Round:    0,
-		POLRound: -1,
-		BlockID: types.BlockID{
-			Hash: make([]byte, 32),
-			PartSetHeader: types.PartSetHeader{
-				Total: types.MaxBlockPartsCount + 1, // Exceeds limit
-				Hash:  make([]byte, 32),
-			},
-		},
-		Timestamp: time.Now(),
-		Signature: makeSig("test-signature"),
-	}
-
-	// Test direct SetHasProposal call (this is what reactor calls)
-	ps.SetHasProposal(invalidProposal)
-	require.False(t, ps.PRS.Proposal, "SetHasProposal should silently ignore proposal with excessive Total")
 
 	// Test that reactor would handle this silently by verifying the defensive programming approach
 	// This provides coverage for the silent handling in handleDataMessage

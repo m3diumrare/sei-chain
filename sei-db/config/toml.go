@@ -7,25 +7,11 @@ const StateCommitConfigTemplate = `
 ###############################################################################
 
 [state-commit]
-# Enable defines if the SeiDB should be enabled to override existing IAVL db backend.
+# Enable defines if the SeiDB state-commit should be enabled.
 sc-enable = {{ .StateCommit.Enable }}
 
 # Defines the SC store directory, if not explicitly set, default to application home directory
 sc-directory = "{{ .StateCommit.Directory }}"
-
-# WriteMode defines how EVM data writes are routed between backends.
-# Valid values: cosmos_only, dual_write, split_write, evm_only
-# defaults to cosmos_only
-sc-write-mode = "{{ .StateCommit.WriteMode }}"
-
-# ReadMode defines how EVM data reads are routed between backends.
-# Valid values: cosmos_only, evm_first, split_read
-# defaults to cosmos_only
-sc-read-mode = "{{ .StateCommit.ReadMode }}"
-
-# EnableLatticeHash controls whether the FlatKV lattice hash participates
-# in the final app hash. Default: false.
-sc-enable-lattice-hash = {{ .StateCommit.EnableLatticeHash }}
 
 # Max concurrent historical proof queries (RPC /store path)
 sc-historical-proof-max-inflight = {{ .StateCommit.HistoricalProofMaxInFlight }}
@@ -126,6 +112,23 @@ ss-prune-interval = {{ .StateStore.PruneIntervalSeconds }}
 # ImportNumWorkers defines the concurrency for state sync import
 # defaults to 1
 ss-import-num-workers = {{ .StateStore.ImportNumWorkers }}
+
+# EVMDBDirectory defines the directory for the optional EVM state-store DB(s).
+# If unset, defaults to <home>/data/evm_ss when EVM SS is enabled.
+evm-ss-db-directory = "{{ .StateStore.EVMDBDirectory }}"
+
+# WriteMode controls how EVM data writes are routed.
+# Supported values: "cosmos_only", "dual_write", "split_write"
+evm-ss-write-mode = "{{ .StateStore.WriteMode }}"
+
+# ReadMode controls how EVM data reads are routed.
+# Supported values: "cosmos_only", "evm_first", "split_read"
+evm-ss-read-mode = "{{ .StateStore.ReadMode }}"
+
+# SeparateEVMSubDBs controls whether EVM data is split across per-type DBs.
+# When false, all EVM data stays in one DB using the current unified layout.
+# When true, data is routed to separate DBs while preserving the same evm key prefix format.
+evm-ss-separate-dbs = {{ .StateStore.SeparateEVMSubDBs }}
 `
 
 // ReceiptStoreConfigTemplate defines the configuration template for receipt-store

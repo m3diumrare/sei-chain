@@ -85,12 +85,18 @@ func (t TestAppOpts) Get(s string) interface{} {
 		return "sei-test"
 	}
 	if s == FlagSCEnable {
-		return t.UseSc
+		return true
 	}
 	// Disable snapshot creation in tests to avoid background goroutines
 	// that are not relevant to the test logic
 	if s == FlagSCSnapshotInterval {
 		return uint32(0) // 0 = disabled
+	}
+	if s == FlagSSEnable {
+		return true
+	}
+	if s == FlagSSBackend {
+		return "pebbledb"
 	}
 	if s == gigaconfig.FlagEnabled {
 		return t.EnableGiga
@@ -362,12 +368,17 @@ func SetupWithAppOptsAndDefaultHome(isCheckTx bool, appOpts TestAppOpts, enableE
 		}
 	}
 
+	homeDir, err := os.MkdirTemp("", "sei-testing")
+	if err != nil {
+		panic(err)
+	}
+
 	res = New(
 		dbm.NewMemDB(),
 		nil,
 		true,
 		map[int64]bool{},
-		DefaultNodeHome,
+		homeDir,
 		1,
 		enableEVMCustomPrecompiles,
 		config.TestConfig(),
@@ -390,7 +401,6 @@ func SetupWithAppOptsAndDefaultHome(isCheckTx bool, appOpts TestAppOpts, enableE
 
 		_, err = res.InitChain(
 			context.Background(), &abci.RequestInitChain{
-				Validators:      []abci.ValidatorUpdate{},
 				ConsensusParams: DefaultConsensusParams,
 				ChainId:         "sei-test",
 				AppStateBytes:   stateBytes,
@@ -460,7 +470,6 @@ func SetupWithDB(tb testing.TB, db dbm.DB, isCheckTx bool, enableEVMCustomPrecom
 
 		_, err = res.InitChain(
 			context.Background(), &abci.RequestInitChain{
-				Validators:      []abci.ValidatorUpdate{},
 				ConsensusParams: DefaultConsensusParams,
 				ChainId:         "sei-test",
 				AppStateBytes:   stateBytes,
@@ -509,7 +518,6 @@ func SetupWithScReceiptFromOpts(t *testing.T, isCheckTx bool, enableEVMCustomPre
 
 		_, err = res.InitChain(
 			context.Background(), &abci.RequestInitChain{
-				Validators:      []abci.ValidatorUpdate{},
 				ConsensusParams: DefaultConsensusParams,
 				ChainId:         "sei-test",
 				AppStateBytes:   stateBytes,
@@ -566,7 +574,6 @@ func SetupWithSc(t *testing.T, isCheckTx bool, enableEVMCustomPrecompiles bool, 
 
 		_, err = res.InitChain(
 			context.Background(), &abci.RequestInitChain{
-				Validators:      []abci.ValidatorUpdate{},
 				ConsensusParams: DefaultConsensusParams,
 				AppStateBytes:   stateBytes,
 			},
@@ -611,7 +618,6 @@ func SetupTestingAppWithLevelDb(t *testing.T, isCheckTx bool, enableEVMCustomPre
 
 		_, err = app.InitChain(
 			context.Background(), &abci.RequestInitChain{
-				Validators:      []abci.ValidatorUpdate{},
 				ConsensusParams: DefaultConsensusParams,
 				ChainId:         "sei-test",
 				AppStateBytes:   stateBytes,
@@ -739,7 +745,6 @@ func SetupWithGenesisValSet(t *testing.T, valSet *tmtypes.ValidatorSet, genAccs 
 	// init chain will set the validator set and initialize the genesis accounts
 	_, _ = app.InitChain(
 		context.Background(), &abci.RequestInitChain{
-			Validators:      []abci.ValidatorUpdate{},
 			ConsensusParams: DefaultConsensusParams,
 			ChainId:         "sei-test",
 			AppStateBytes:   stateBytes,
@@ -782,7 +787,6 @@ func SetupWithGenesisAccounts(t *testing.T, genAccs []authtypes.GenesisAccount, 
 
 	_, _ = app.InitChain(
 		context.Background(), &abci.RequestInitChain{
-			Validators:      []abci.ValidatorUpdate{},
 			ConsensusParams: DefaultConsensusParams,
 			ChainId:         "sei-test",
 			AppStateBytes:   stateBytes,

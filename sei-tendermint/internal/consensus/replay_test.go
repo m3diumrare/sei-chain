@@ -74,6 +74,12 @@ func getConfig(t *testing.T) *config.Config {
 	return c
 }
 
+func newApp(validators []abci.ValidatorUpdate) *kvstore.Application {
+	app := kvstore.NewApplication()
+	app.SetValidators(validators)
+	return app
+}
+
 func waitForBlock(ctx context.Context, cs *State, lastBlock int64) error {
 	newBlockSub, err := cs.eventBus.SubscribeWithArgs(ctx, pubsub.SubscribeArgs{
 		ClientID: testSubscriber,
@@ -98,13 +104,14 @@ func runStateUntilBlock(t *testing.T, cfg *config.Config, lastBlock int64) {
 	ctx := t.Context()
 	state, err := sm.MakeGenesisStateFromFile(cfg.GenesisFile())
 	require.NoError(t, err)
+	genDoc := utils.OrPanic1(types.GenesisDocFromFile(cfg.GenesisFile()))
 	state.Version.Consensus.App = kvstore.ProtocolVersion // simulate handshake, receive app version
 	cs := newStateWithConfigAndBlockStore(
 		ctx,
 		cfg,
 		state,
 		loadPrivValidator(cfg),
-		kvstore.NewApplication(),
+		newApp(genDoc.ValidatorUpdates()),
 		store.NewBlockStore(dbm.NewMemDB()),
 	)
 	defer cs.wal.Close()
@@ -145,7 +152,7 @@ func sendTxs(ctx context.Context, cs *State) error {
 			return nil
 		}
 		tx := []byte{byte(i)}
-		if err := cs.txNotifier.(mempool.Mempool).CheckTx(ctx, tx, nil, mempool.TxInfo{}); err != nil {
+		if err := cs.txMempool.CheckTx(ctx, tx, nil, mempool.TxInfo{}); err != nil {
 			return fmt.Errorf("cs.mempool.CheckTx(): %w", err)
 		}
 	}
@@ -223,13 +230,14 @@ func crashWALandCheckLiveness(
 	t.Logf("Generate WAL with sendTxsFn running in parallel.")
 	state, err := sm.MakeGenesisStateFromFile(cfg.GenesisFile())
 	require.NoError(t, err)
+	genDoc := utils.OrPanic1(types.GenesisDocFromFile(cfg.GenesisFile()))
 	state.Version.Consensus.App = kvstore.ProtocolVersion // simulate handshake, receive app version
 	cs := newStateWithConfigAndBlockStore(
 		ctx,
 		cfg,
 		state,
 		loadPrivValidator(cfg),
-		kvstore.NewApplication(),
+		newApp(genDoc.ValidatorUpdates()),
 		store.NewBlockStore(dbm.NewMemDB()),
 	)
 	defer cs.wal.Close()
@@ -261,7 +269,7 @@ type simulatorTestSuite struct {
 	Commits      []*types.Commit
 	CleanupFunc  cleanupFunc
 
-	Mempool mempool.Mempool
+	Mempool *mempool.TxMempool
 	Evpool  sm.EvidencePool
 }
 
@@ -284,7 +292,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	cfg := configSetup(t)
 
 	sim := &simulatorTestSuite{
-		Mempool: emptyMempool{},
+		Mempool: newReplayTxMempool(kvstore.NewApplication()),
 		Evpool:  sm.EmptyEvidencePool{},
 	}
 
@@ -298,7 +306,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 		nVals,
 		nPeers,
 		newMockTickerFunc(true),
-		newEpehemeralKVStore)
+	)
 	sim.Config = cfg
 	defer func() { t.Cleanup(cleanup) }()
 
@@ -339,7 +347,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	require.NoError(t, err)
 	valPubKey1ABCI := crypto.PubKeyToProto(newValidatorPubKey1)
 	newValidatorTx1 := kvstore.MakeValSetChangeTx(valPubKey1ABCI, testMinPower)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, newValidatorTx1, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, newValidatorTx1, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 	propBlock, err := css[0].createProposalBlock(ctx) // changeProposer(t, cs1, vs2)
 	require.NoError(t, err)
@@ -375,7 +383,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	require.NoError(t, err)
 	updatePubKey1ABCI := crypto.PubKeyToProto(updateValidatorPubKey1)
 	updateValidatorTx1 := kvstore.MakeValSetChangeTx(updatePubKey1ABCI, 25)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, updateValidatorTx1, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, updateValidatorTx1, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 	propBlock, err = css[0].createProposalBlock(ctx) // changeProposer(t, cs1, vs2)
 	require.NoError(t, err)
@@ -410,14 +418,14 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	require.NoError(t, err)
 	newVal2ABCI := crypto.PubKeyToProto(newValidatorPubKey2)
 	newValidatorTx2 := kvstore.MakeValSetChangeTx(newVal2ABCI, testMinPower)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, newValidatorTx2, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, newValidatorTx2, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 	pv, _ = css[nVals+2].privValidator.Get()
 	newValidatorPubKey3, err := pv.GetPubKey(ctx)
 	require.NoError(t, err)
 	newVal3ABCI := crypto.PubKeyToProto(newValidatorPubKey3)
 	newValidatorTx3 := kvstore.MakeValSetChangeTx(newVal3ABCI, testMinPower)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, newValidatorTx3, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, newValidatorTx3, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 	propBlock, err = css[0].createProposalBlock(ctx) // changeProposer(t, cs1, vs2)
 	require.NoError(t, err)
@@ -463,7 +471,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	ensureNewProposal(t, proposalCh, height, round)
 
 	removeValidatorTx2 := kvstore.MakeValSetChangeTx(newVal2ABCI, 0)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, removeValidatorTx2, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, removeValidatorTx2, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 
 	rs = css[0].GetRoundState()
@@ -507,7 +515,7 @@ func setupSimulator(ctx context.Context, t *testing.T) *simulatorTestSuite {
 	height++
 	incrementHeight(vss...)
 	removeValidatorTx3 := kvstore.MakeValSetChangeTx(newVal3ABCI, 0)
-	err = assertMempool(t, css[0].txNotifier).CheckTx(ctx, removeValidatorTx3, nil, mempool.TxInfo{})
+	err = css[0].txMempool.CheckTx(ctx, removeValidatorTx3, nil, mempool.TxInfo{})
 	assert.NoError(t, err)
 	propBlock, err = css[0].createProposalBlock(ctx) // changeProposer(t, cs1, vs2)
 	require.NoError(t, err)
@@ -689,7 +697,8 @@ func testHandshakeReplay(
 	eventBus := eventbus.NewDefault()
 	require.NoError(t, eventBus.Start(ctx))
 
-	app := kvstore.NewApplication()
+	genDoc := utils.OrPanic1(types.GenesisDocFromFile(cfg.GenesisFile()))
+	app := newApp(genDoc.ValidatorUpdates())
 	if nBlocks > 0 {
 		// run nBlocks against a new client to build up the app state.
 		// use a throwaway tendermint state
@@ -750,7 +759,7 @@ func applyBlock(
 	ctx context.Context,
 	t *testing.T,
 	stateStore sm.Store,
-	mempool mempool.Mempool,
+	mempool *mempool.TxMempool,
 	evpool sm.EvidencePool,
 	st sm.State,
 	blk *types.Block,
@@ -772,9 +781,9 @@ func applyBlock(
 func buildAppStateFromChain(
 	ctx context.Context,
 	t *testing.T,
-	appClient abci.Application,
+	appClient *kvstore.Application,
 	stateStore sm.Store,
-	mempool mempool.Mempool,
+	mempool *mempool.TxMempool,
 	evpool sm.EvidencePool,
 	state sm.State,
 	chain []*types.Block,
@@ -786,12 +795,8 @@ func buildAppStateFromChain(
 	t.Helper()
 	// start a new app without handshake, play nBlocks blocks
 	state.Version.Consensus.App = kvstore.ProtocolVersion // simulate handshake, receive app version
-	validators := types.TM2PB.ValidatorUpdates(state.Validators)
-	_, err := appClient.InitChain(ctx, &abci.RequestInitChain{
-		Validators: validators,
-	})
+	_, err := appClient.InitChain(ctx, &abci.RequestInitChain{})
 	require.NoError(t, err)
-
 	require.NoError(t, stateStore.Save(state)) // save height 1's validatorsInfo
 
 	switch mode {
@@ -820,7 +825,7 @@ func buildAppStateFromChain(
 func buildTMStateFromChain(
 	ctx context.Context,
 	t *testing.T,
-	mempool mempool.Mempool,
+	mempool *mempool.TxMempool,
 	evpool sm.EvidencePool,
 	stateStore sm.Store,
 	state sm.State,
@@ -831,13 +836,9 @@ func buildTMStateFromChain(
 	t.Helper()
 
 	// run the whole chain against this client to build up the tendermint state
-	app := kvstore.NewApplication()
-
+	app := newApp(types.TM2PB.ValidatorUpdates(state.Validators))
 	state.Version.Consensus.App = kvstore.ProtocolVersion // simulate handshake, receive app version
-	validators := types.TM2PB.ValidatorUpdates(state.Validators)
-	_, err := app.InitChain(ctx, &abci.RequestInitChain{
-		Validators: validators,
-	})
+	_, err := app.InitChain(ctx, &abci.RequestInitChain{})
 	require.NoError(t, err)
 
 	require.NoError(t, stateStore.Save(state))
@@ -1130,11 +1131,17 @@ func TestHandshakeUpdatesValidators(t *testing.T) {
 	stateStore := sm.NewStore(stateDB)
 
 	oldValAddr := state.Validators.Validators[0].Address
+	genDoc := utils.OrPanic1(sm.MakeGenesisDocFromFile(cfg.GenesisFile()))
+	genDoc.Validators = []types.GenesisValidator{{
+		Address: val.Address,
+		PubKey:  val.PubKey,
+		Power:   val.VotingPower,
+	}}
+	require.NoError(t, genDoc.SaveAs(cfg.GenesisFile()))
 
 	// now start the app using the handshake - it should sync
-	genDoc, err := sm.MakeGenesisDocFromFile(cfg.GenesisFile())
+	genDoc, err = sm.MakeGenesisDocFromFile(cfg.GenesisFile())
 	require.NoError(t, err)
-
 	handshaker := NewHandshaker(stateStore, state, store, eventBus, genDoc)
 	require.NoError(t, handshaker.Handshake(ctx, app), "error on abci handshake")
 
