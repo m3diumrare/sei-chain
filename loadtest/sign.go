@@ -48,9 +48,18 @@ func (si *SignerInfo) IncrementAccountNumber() {
 	si.AccountNumber++
 }
 
+// accountSeqTracker holds the next sequence to sign with for one account (Cosmos auth sequence is per-address).
+type accountSeqTracker struct {
+	mu            sync.Mutex
+	accountNumber uint64
+	nextSeq       uint64
+	inited        bool
+}
+
 type SignerClient struct {
 	CachedAccountSeqNum *sync.Map
 	CachedAccountKey    *sync.Map
+	accountSeqTrackers  *sync.Map // bech32 address -> *accountSeqTracker
 	NodeURI             string
 }
 
@@ -58,8 +67,64 @@ func NewSignerClient(nodeURI string) *SignerClient {
 	return &SignerClient{
 		CachedAccountSeqNum: &sync.Map{},
 		CachedAccountKey:    &sync.Map{},
+		accountSeqTrackers:  &sync.Map{},
 		NodeURI:             nodeURI,
 	}
+}
+
+func (sc *SignerClient) trackerKey(privKey cryptotypes.PrivKey) string {
+	return sdk.AccAddress(privKey.PubKey().Address()).String()
+}
+
+func (sc *SignerClient) getOrCreateSeqTracker(privKey cryptotypes.PrivKey) *accountSeqTracker {
+	key := sc.trackerKey(privKey)
+	if t, ok := sc.accountSeqTrackers.Load(key); ok {
+		return t.(*accountSeqTracker)
+	}
+	t := &accountSeqTracker{}
+	actual, _ := sc.accountSeqTrackers.LoadOrStore(key, t)
+	return actual.(*accountSeqTracker)
+}
+
+func (sc *SignerClient) fetchAccountSeqFromChain(privKey cryptotypes.PrivKey) (accountNum, seq uint64, err error) {
+	hexAccount := privKey.PubKey().Address()
+	address, e := sdk.AccAddressFromHex(hexAccount.String())
+	if e != nil {
+		return 0, 0, e
+	}
+	accountRetriever := authtypes.AccountRetriever{}
+	cl, e := client.NewClientFromNode(sc.NodeURI)
+	if e != nil {
+		return 0, 0, e
+	}
+	ctx := client.Context{}
+	ctx = ctx.WithNodeURI(sc.NodeURI)
+	ctx = ctx.WithClient(cl)
+	ctx = ctx.WithInterfaceRegistry(TestConfig.InterfaceRegistry)
+	userHomeDir, _ := os.UserHomeDir()
+	kr, _ := keyring.New(sdk.KeyringServiceName(), "test", filepath.Join(userHomeDir, ".sei"), os.Stdin)
+	ctx = ctx.WithKeyring(kr)
+	accountNum, seq, err = accountRetriever.GetAccountNumberSequence(ctx, address)
+	if err != nil {
+		time.Sleep(5 * time.Second)
+		accountNum, seq, err = accountRetriever.GetAccountNumberSequence(ctx, address)
+	}
+	return accountNum, seq, err
+}
+
+// ResyncAccountSequence resets local sequence from the node (e.g. after a failed broadcast with wrong sequence).
+func (sc *SignerClient) ResyncAccountSequence(privKey cryptotypes.PrivKey) {
+	t := sc.getOrCreateSeqTracker(privKey)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	acc, seq, err := sc.fetchAccountSeqFromChain(privKey)
+	if err != nil {
+		fmt.Printf("ResyncAccountSequence: fetch failed: %v\n", err)
+		return
+	}
+	t.accountNumber = acc
+	t.nextSeq = seq
+	t.inited = true
 }
 
 func (sc *SignerClient) GetTestAccountsKeys(maxAccounts int) []cryptotypes.PrivKey {
@@ -169,12 +234,24 @@ func (sc *SignerClient) GetValKeys() ([]cryptotypes.PrivKey, error) {
 	return valKeys, nil
 }
 
-func (sc *SignerClient) SignTx(chainID string, txBuilder *client.TxBuilder, privKey cryptotypes.PrivKey, seqDelta uint64) error {
-	signerInfo := sc.GetAccountNumberSequenceNumber(privKey)
-	accountNum := signerInfo.AccountNumber
-	seqNum := signerInfo.SequenceNumber
+func (sc *SignerClient) SignTx(chainID string, txBuilder *client.TxBuilder, privKey cryptotypes.PrivKey, _ uint64) error {
+	t := sc.getOrCreateSeqTracker(privKey)
+	t.mu.Lock()
+	if !t.inited {
+		acc, seq, err := sc.fetchAccountSeqFromChain(privKey)
+		if err != nil {
+			t.mu.Unlock()
+			return fmt.Errorf("fetchAccountSeqFromChain: %w", err)
+		}
+		t.accountNumber = acc
+		t.nextSeq = seq
+		t.inited = true
+	}
+	seqNum := t.nextSeq
+	t.nextSeq++
+	accountNum := t.accountNumber
+	t.mu.Unlock()
 
-	seqNum += seqDelta
 	sigV2 := signing.SignatureV2{
 		PubKey: privKey.PubKey(),
 		Data: &signing.SingleSignatureData{

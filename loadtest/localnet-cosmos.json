@@ -1,0 +1,22 @@
+{
+  "grpc_endpoints": "127.0.0.1:9090",
+  "evm_rpc_endpoints": "",
+  "blockchain_endpoint": "http://localhost:26657",
+  "node_uri": "tcp://localhost:26657",
+  "tls": false,
+  "msgs_per_tx": 1,
+  "chain_id": "sei",
+  "target_tps": 20,
+  "max_accounts": 10,
+  "message_types": ["bank", "staking"],
+  "message_type_distribution": {
+    "dex": { "limit_order_percentage": "0.5", "market_order_percentage": "0.5" },
+    "staking": { "delegate_percentage": "0.5", "undelegate_percentage": "0.25", "begin_redelegate_percentage": "0.25" }
+  },
+  "price_distribution": { "min": "1", "max": "10", "number_of_distinct_values": 10 },
+  "quantity_distribution": { "min": "1", "max": "10", "number_of_distinct_values": 10 },
+  "message_configs": { "default": { "gas": 3000000, "fee": 200000 } },
+  "post_tx_evm_queries": { "block_by_number": 0, "receipt": 0, "filters": 0 },
+  "metrics_port": 9695,
+  "ticks": 0
+}

@@ -224,7 +224,7 @@ func (c *LoadTestClient) generateSignedEvmTx(keyIndex int, msgType string) *etht
 	return c.EvmTxClients[keyIndex].GetTxForMsgType(msgType)
 }
 
-func (c *LoadTestClient) generateSignedCosmosTxs(keyIndex int, msgType string, msgTypeCount int64) ([]byte, error) {
+func (c *LoadTestClient) generateSignedCosmosTxs(keyIndex int, msgType string, _ int64) ([]byte, error) {
 	key := c.AccountKeys[keyIndex]
 	msgs, _, _, gas, fee := c.generateMessage(key, msgType)
 	txBuilder := TestConfig.TxConfig.NewTxBuilder()
@@ -235,8 +235,7 @@ func (c *LoadTestClient) generateSignedCosmosTxs(keyIndex int, msgType string, m
 	txBuilder.SetFeeAmount([]types.Coin{
 		types.NewCoin("usei", types.NewInt(fee)),
 	})
-	// Use random seqno to get around txs that might already be seen in mempool
-	if err := c.SignerClient.SignTx(c.ChainID, &txBuilder, key, uint64(msgTypeCount)); err != nil { //nolint:gosec // msgTypeCount is a small positive counter; no overflow risk
+	if err := c.SignerClient.SignTx(c.ChainID, &txBuilder, key, 0); err != nil {
 		return nil, fmt.Errorf("signTx: %w", err)
 	}
 	txBytes, err := TestConfig.TxConfig.TxEncoder()(txBuilder.GetTx())
@@ -275,8 +274,11 @@ func (c *LoadTestClient) SendTxs(
 				break
 			}
 			if len(tx.TxBytes) > 0 {
-				// Send Cosmos Transactions
-				if SendTx(ctx, tx.TxBytes, typestx.BroadcastMode_BROADCAST_MODE_BLOCK, *c) {
+				ok, seqMismatch := SendTx(ctx, tx.TxBytes, typestx.BroadcastMode_BROADCAST_MODE_BLOCK, *c)
+				if seqMismatch {
+					c.SignerClient.ResyncAccountSequence(c.AccountKeys[keyIndex])
+				}
+				if ok {
 					atomic.AddInt64(producedCountPerMsgType[tx.MsgType], 1)
 				}
 			} else if tx.EvmTx != nil {

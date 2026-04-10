@@ -57,6 +57,19 @@ done <build/generated/genesis_accounts.txt
 # add funds to admin account
 printf "12345678\n" | seid add-genesis-account admin 1000000000000000000000usei,1000000000000000000000uusdc,1000000000000000000000uatom
 
+# loadtest: step1 populate_genesis_accounts.py adds ta* to genesis, but the auth/bank reset
+# above removes them. Re-add every address from ~/test_accounts so loadtest keys match chain state.
+if [ -d "$HOME/test_accounts" ]; then
+  for f in "$HOME"/test_accounts/*.json; do
+    [ -f "$f" ] || continue
+    addr=$(jq -r .address "$f")
+    if [ -n "$addr" ] && [ "$addr" != "null" ]; then
+      echo "Adding loadtest account $addr"
+      seid add-genesis-account "$addr" 1000000000000000000000usei,1000000000000000000000uusdc,1000000000000000000000uatom
+    fi
+  done
+fi
+
 mkdir -p ~/exported_keys
 cp -r build/generated/gentx/* ~/.sei/config/gentx
 cp -r build/generated/exported_keys ~/exported_keys
