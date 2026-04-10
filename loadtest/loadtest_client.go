@@ -280,6 +280,7 @@ func (c *LoadTestClient) SendTxs(
 				}
 				if ok {
 					atomic.AddInt64(producedCountPerMsgType[tx.MsgType], 1)
+					maybePprofAfterCosmosSuccess()
 				}
 			} else if tx.EvmTx != nil {
 				// Send EVM Transactions

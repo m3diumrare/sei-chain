@@ -72,6 +72,7 @@ type Config struct {
 	PostTxEvmQueries   PostTxEvmQueries      `json:"post_tx_evm_queries"`
 	Ticks              uint64                `json:"ticks"`
 	EvmUseEip1559Txs   bool                  `json:"evm_use_eip1559_txs"` // setting this to true could make gas go up to infinity
+	PprofCapture       *PprofCaptureConfig   `json:"pprof_capture,omitempty"`
 
 	// These are dynamically set at startup
 	EVMAddresses *EVMAddresses
@@ -218,6 +219,27 @@ type PostTxEvmQueries struct {
 	BlockByNumber int `json:"block_by_number"`
 	Receipt       int `json:"receipt"`
 	Filters       int `json:"filters"`
+}
+
+// PprofCaptureConfig pulls CPU profiles from the node's net/http/pprof server (e.g. :6060).
+// Omit or leave base_url empty to disable.
+//
+// For comparable A/B runs: use the same target_tps, warmup_seconds, steady_secs_before_profile,
+// block_heights, seconds, and height_poll_interval_ms between binaries.
+type PprofCaptureConfig struct {
+	BaseURL      string  `json:"base_url"`
+	Seconds      int     `json:"seconds"`       // profile sample duration; default 10
+	OutputDir    string  `json:"output_dir"`    // default "."
+	BlockHeights []int64 `json:"block_heights"` // one capture when height first reaches >= each value (sorted ascending)
+	EveryNTx     uint64  `json:"every_n_txs"`   // 0 = off; capture every N successful Cosmos txs after warmup
+
+	// WarmupSeconds: wait after loadtest starts before any capture (lets rate limiter + mempool reach steady TPS).
+	WarmupSeconds uint64 `json:"warmup_seconds"`
+	// SteadySecondsBeforeProfile: after crossing a block_heights milestone, wait this long before starting
+	// the CPU profile (still at steady TPS; avoids capturing during the first moment height crosses).
+	SteadySecondsBeforeProfile uint64 `json:"steady_secs_before_profile"`
+	// HeightPollIntervalMs: how often to poll /status for height while waiting (default 250). Use 100–200 for tighter alignment.
+	HeightPollIntervalMs int `json:"height_poll_interval_ms"`
 }
 
 type SignedTx struct {

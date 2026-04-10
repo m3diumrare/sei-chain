@@ -18,5 +18,15 @@
   "message_configs": { "default": { "gas": 3000000, "fee": 200000 } },
   "post_tx_evm_queries": { "block_by_number": 0, "receipt": 0, "filters": 0 },
   "metrics_port": 9695,
-  "ticks": 0
+  "ticks": 0,
+  "pprof_capture": {
+    "base_url": "http://127.0.0.1:6060",
+    "seconds": 15,
+    "output_dir": "~/Desktop/go_profiles/loadtest",
+    "block_heights": [800, 1200, 1600],
+    "every_n_txs": 0,
+    "warmup_seconds": 60,
+    "steady_secs_before_profile": 5,
+    "height_poll_interval_ms": 100
+  }
 }

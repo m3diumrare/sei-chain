@@ -179,6 +179,7 @@ func startLoadtestWorkers(client *LoadTestClient, config Config) {
 		txQueues[i] = make(chan SignedTx, 10)
 	}
 	done := make(chan struct{})
+	startPprofCaptureIfConfigured(&config, done)
 	producerRateLimiter := rate.NewLimiter(rate.Limit(config.TargetTps), int(config.TargetTps)) //nolint:gosec
 	consumerSemaphore := semaphore.NewWeighted(int64(config.TargetTps))                         //nolint:gosec
 	var wg sync.WaitGroup
